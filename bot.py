@@ -77,14 +77,19 @@ def home():
 def messages():
     activity = Activity().deserialize(request.json)
 
-    try:
-        auth_header = request.headers.get("Authorization", "")
-        return asyncio.run(adapter.process_activity(activity, auth_header, handle_message))
+    # For local/dev testing: bypass full auth pipeline
+    class NoAuthAdapter(BotFrameworkAdapter):
+        async def _authenticate_request(self, activity, auth_header):
+            return None  # skip auth completely
 
-    except PermissionError as e:
-        # Skip auth check for Postman / local testing
-        print("⚠️ Skipping auth check for testing:", str(e))
-        return asyncio.run(adapter.process_activity(activity, "", handle_message))
+    # Use custom adapter (skips JWT check)
+    local_adapter = NoAuthAdapter(adapter_settings)
+
+    try:
+        return asyncio.run(local_adapter.process_activity(activity, "", handle_message))
+    except Exception as e:
+        print("❌ Internal error:", str(e))
+        return "Internal Server Error", 500
 
 
 # Run the app

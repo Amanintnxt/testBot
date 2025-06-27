@@ -17,11 +17,10 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-# OpenAI Azure setup
 openai.api_key = AZURE_OPENAI_API_KEY
 openai.api_type = "azure"
 openai.api_version = "2024-05-01-preview"
-openai.base_url = AZURE_OPENAI_ENDPOINT.rstrip("/") + "/openai/v1"
+openai.azure_endpoint = AZURE_OPENAI_ENDPOINT.rstrip("/")
 
 # Message handler function
 

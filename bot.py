@@ -70,7 +70,7 @@ async def handle_message(turn_context: TurnContext):
 # Home route (test with browser)
 @app.route("/")
 def home():
-    return "Bot is running!"
+    return "Bot is running!!!"
 
 # Microsoft Bot Framework endpoint
 @app.route("/api/messages", methods=["POST"])

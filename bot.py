@@ -1,3 +1,4 @@
+
 import os
 import time
 import openai
@@ -59,6 +60,26 @@ async def handle_message(turn_context: TurnContext):
     await turn_context.send_activity(reply)
 
 # Endpoint for Azure Bot to call
+
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def home():
+    return "Bot is running!"
+
+# Existing route to receive messages (Microsoft Bot Framework)
+
+
+@app.route("/api/messages", methods=["POST"])
+def messages():
+    # Your bot message handling logic here
+    return "OK", 200
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=3978)
 
 
 @app.route("/api/messages", methods=["POST"])

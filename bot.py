@@ -3,95 +3,89 @@ import time
 import openai
 import asyncio
 from flask import Flask, request
+from dotenv import load_dotenv
 from botbuilder.core import BotFrameworkAdapter, BotFrameworkAdapterSettings, TurnContext
 from botbuilder.schema import Activity
-from dotenv import load_dotenv
 
-# Load environment variables
+# Load .env if running locally
 load_dotenv()
 
-# Initialize Flask app
+# Flask app
 app = Flask(__name__)
 
-# Load ENV variables
+# Environment variables
 APP_ID = os.getenv("MicrosoftAppId")
 APP_PASSWORD = os.getenv("MicrosoftAppPassword")
-OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-ASSISTANT_ID = os.getenv("ASSISTANT_ID")
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-# Set OpenAI (Azure) config
-openai.api_key = OPENAI_API_KEY
-if AZURE_OPENAI_ENDPOINT:
-    openai.base_url = AZURE_OPENAI_ENDPOINT.rstrip("/") + "/openai"
-    openai.api_type = "azure"
-    openai.api_version = "2024-05-01-preview"
+# OpenAI Azure setup
+openai.api_key = AZURE_OPENAI_API_KEY
+openai.api_type = "azure"
+openai.api_version = "2024-05-01-preview"
+openai.base_url = AZURE_OPENAI_ENDPOINT.rstrip("/") + "/openai/v1"
 
-# Configure Bot Framework adapter
+# Bot Framework Adapter
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
 adapter = BotFrameworkAdapter(adapter_settings)
 
-# Message handler
 
-
+# Message handler function
 async def handle_message(turn_context: TurnContext):
     user_input = turn_context.activity.text
-    try:
-        thread = openai.beta.threads.create()
-        openai.beta.threads.messages.create(
-            thread_id=thread.id,
-            role="user",
-            content=user_input
-        )
-        run = openai.beta.threads.runs.create(
-            assistant_id=ASSISTANT_ID,
-            thread_id=thread.id
-        )
-        while run.status != "completed":
-            time.sleep(1)
-            run = openai.beta.threads.runs.retrieve(
-                thread_id=thread.id,
-                run_id=run.id
-            )
 
-        messages = openai.beta.threads.messages.list(thread_id=thread.id)
-        reply = messages.data[0].content[0].text.value if messages.data else "No reply received."
+    # Step 1: Create a thread
+    thread = openai.beta.threads.create()
 
-    except Exception as e:
-        reply = f"❌ Error: {str(e)}"
-        print("BOT ERROR:", str(e))
+    # Step 2: Add user message to thread
+    openai.beta.threads.messages.create(
+        thread_id=thread.id,
+        role="user",
+        content=user_input
+    )
 
+    # Step 3: Run the Assistant on that thread
+    run = openai.beta.threads.runs.create(
+        assistant_id=ASSISTANT_ID,
+        thread_id=thread.id
+    )
+
+    # Step 4: Wait for Assistant to complete
+    while run.status != "completed":
+        time.sleep(1)
+        run = openai.beta.threads.runs.retrieve(
+            thread_id=thread.id, run_id=run.id)
+
+    # Step 5: Get reply
+    messages = openai.beta.threads.messages.list(thread_id=thread.id)
+    if messages.data:
+        reply = messages.data[0].content[0].text.value
+    else:
+        reply = "No response from Assistant."
+
+    # Send reply back to user
     await turn_context.send_activity(reply)
 
-# Home route for quick check
+
+# Health check route
+@app.route("/", methods=["GET"])
+def index():
+    return "Azure OpenAI Bot is running."
 
 
-@app.route("/")
-def home():
-    return "Bot is running!"
-
-# Microsoft Bot Framework message endpoint
-
-
+# Main bot route (used by Azure Bot Service)
 @app.route("/api/messages", methods=["POST"])
 def messages():
-    activity = Activity().deserialize(request.json)
-
-    # For local/dev testing: bypass full auth pipeline
-    class NoAuthAdapter(BotFrameworkAdapter):
-        async def _authenticate_request(self, activity, auth_header):
-            return None  # skip auth completely
-
-    # Use custom adapter (skips JWT check)
-    local_adapter = NoAuthAdapter(adapter_settings)
-
     try:
-        return asyncio.run(local_adapter.process_activity(activity, "", handle_message))
+        activity = Activity().deserialize(request.json)
+        auth_header = request.headers.get("Authorization", "")
+        return asyncio.run(adapter.process_activity(activity, auth_header, handle_message))
     except Exception as e:
-        print("❌ Internal error:", str(e))
-        return "Internal Server Error", 500
+        print(f"❌ ERROR: {e}")
+        return f"Error: {e}", 500
 
 
-# Run the app
+# Run locally or on Render
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=3978)

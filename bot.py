@@ -77,15 +77,21 @@ def index():
 # POST /api/messages for incoming bot messages
 
 
-@app.route("/api/messages", methods=["POST"])
+@app.route("/api/messages", methods=["GET", "POST", "OPTIONS"])
 def messages():
+    if request.method == "OPTIONS":
+        # CORS preflight
+        return '', 200
+
+    if request.method == "GET":
+        return "This endpoint only supports POST for bot messages", 405
+
+    # POST handling
     try:
         logging.warning(f"Incoming request: {request.json}")
-        # Defensive: handle missing or malformed payloads
         if not request.json:
             return jsonify({"error": "Empty request"}), 400
 
-        # Try to extract user message
         try:
             activity = Activity().deserialize(request.json)
             user_input = getattr(activity, "text", None) or "Hello"

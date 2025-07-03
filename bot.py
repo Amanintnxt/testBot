@@ -91,15 +91,23 @@ async def handle_message(turn_context: TurnContext):
 
 @app.route("/api/messages", methods=["POST"])
 def messages():
-    if request.headers.get("Content-Type", "").startswith("application/json"):
-        body = request.get_json(force=True)
+    if "application/json" in request.headers.get("Content-Type", ""):
+        body = request.json
     else:
-        return Response("Unsupported Media Type", status=415)
+        return Response(status=415)
 
     activity = Activity().deserialize(body)
     auth_header = request.headers.get("Authorization", "")
+
     task = adapter.process_activity(activity, auth_header, handle_message)
-    return asyncio.run(task)
+
+    try:
+        # Await the task and return a 200 OK response
+        asyncio.run(task)
+        return Response(status=200)
+    except Exception as e:
+        logging.error(f"Error in message processing: {e}")
+        return Response("Sorry, something went wrong.\n", status=500)
 
 # Health check route
 

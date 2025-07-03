@@ -2,6 +2,7 @@ import os
 import time
 import openai
 import asyncio
+import logging
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -79,11 +80,16 @@ def index():
 @app.route("/api/messages", methods=["POST"])
 def messages():
     try:
+        logging.warning(f"Incoming request: {request.json}")
         activity = Activity().deserialize(request.json)
         user_input = activity.text or "Hello"
         reply = asyncio.run(handle_message(user_input))
-        return jsonify({"reply": reply})
+        return jsonify({
+            "type": "message",
+            "text": reply
+        })
     except Exception as e:
+        logging.error(f"Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 

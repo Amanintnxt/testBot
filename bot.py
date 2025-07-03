@@ -14,9 +14,8 @@ load_dotenv()
 
 # Flask app
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all domains
-
-CORS(app, origins=["https://portal.azure.com"])
+# Allow all origins for testing; restrict in production
+CORS(app, origins=["*"])
 
 # Environment Variables
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
@@ -65,6 +64,7 @@ async def handle_message(user_input: str) -> str:
             return "No reply from Assistant."
 
     except Exception as e:
+        logging.error(f"Error in handle_message: {e}")
         return f"Error: {str(e)}"
 
 # Health check route
@@ -81,9 +81,21 @@ def index():
 def messages():
     try:
         logging.warning(f"Incoming request: {request.json}")
-        activity = Activity().deserialize(request.json)
-        user_input = activity.text or "Hello"
+        # Defensive: handle missing or malformed payloads
+        if not request.json:
+            return jsonify({"error": "Empty request"}), 400
+
+        # Try to extract user message
+        try:
+            activity = Activity().deserialize(request.json)
+            user_input = getattr(activity, "text", None) or "Hello"
+        except Exception as e:
+            logging.error(f"Activity deserialization failed: {e}")
+            user_input = request.json.get("text", "Hello")
+
         reply = asyncio.run(handle_message(user_input))
+
+        # Respond in Bot Framework format
         return jsonify({
             "type": "message",
             "text": reply
@@ -95,4 +107,5 @@ def messages():
 
 # Run locally or on Render
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     app.run(host="0.0.0.0", port=3978)

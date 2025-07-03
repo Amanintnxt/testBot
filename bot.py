@@ -4,33 +4,40 @@ import openai
 import asyncio
 import logging
 
-from flask import Flask, request, jsonify
+from flask import Flask, request
 from dotenv import load_dotenv
-from flask_cors import CORS
+from botbuilder.core import BotFrameworkAdapter, BotFrameworkAdapterSettings, TurnContext
 from botbuilder.schema import Activity
 
-# Load environment variables from .env
+# Load env variables
 load_dotenv()
 
-# Flask app setup
+# Flask app
 app = Flask(__name__)
-CORS(app, origins=["*"])  # Allow all origins for testing
 
-# Environment variables
+# Azure Credentials
+APP_ID = os.getenv("MicrosoftAppId")
+APP_PASSWORD = os.getenv("MicrosoftAppPassword")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-# Azure OpenAI setup
+# Configure OpenAI
 openai.api_type = "azure"
 openai.api_version = "2024-05-01-preview"
 openai.api_key = AZURE_OPENAI_API_KEY
 openai.azure_endpoint = AZURE_OPENAI_ENDPOINT.rstrip("/")
 
-# Async handler for messages
+# Bot Adapter
+adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
+adapter = BotFrameworkAdapter(adapter_settings)
+
+# Async function to handle user messages
 
 
-async def handle_message(user_input: str) -> str:
+async def handle_message(turn_context: TurnContext):
+    user_input = turn_context.activity.text
+
     try:
         thread = openai.beta.threads.create()
 
@@ -54,50 +61,27 @@ async def handle_message(user_input: str) -> str:
 
         messages = openai.beta.threads.messages.list(thread_id=thread.id)
         if messages.data:
-            return messages.data[0].content[0].text.value
+            reply = messages.data[0].content[0].text.value
         else:
-            return "No reply from Assistant."
+            reply = "No reply from Assistant."
+
+        await turn_context.send_activity(reply)
+
     except Exception as e:
-        logging.error(f"[❌] Error in handle_message: {e}")
-        return f"Error: {str(e)}"
+        logging.error(f"[❌] OpenAI error: {e}")
+        await turn_context.send_activity("Oops! Something went wrong.")
 
-# Health check
-
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Azure OpenAI Assistant Bot is running."
-
-# Main /api/messages endpoint
+# Main endpoint for Azure Bot Framework
 
 
 @app.route("/api/messages", methods=["POST"])
 def messages():
-    try:
-        logging.info("Received message request.")
-        if not request.json:
-            return jsonify({"error": "Empty request"}), 400
-
-        try:
-            activity = Activity().deserialize(request.json)
-            user_input = getattr(activity, "text", None) or "Hello"
-        except Exception as e:
-            logging.warning(f"Activity parsing failed: {e}")
-            user_input = request.json.get("text", "Hello")
-
-        reply = asyncio.run(handle_message(user_input))
-
-        return jsonify({
-            "type": "message",
-            "text": reply
-        })
-
-    except Exception as e:
-        logging.error(f"[❌] Error in /api/messages: {e}")
-        return jsonify({"error": str(e)}), 500
+    activity = Activity().deserialize(request.json)
+    auth_header = request.headers.get("Authorization", "")
+    return asyncio.run(adapter.process_activity(activity, auth_header, handle_message))
 
 
-# Run locally or on Render
+# Run
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     app.run(host="0.0.0.0", port=3978)

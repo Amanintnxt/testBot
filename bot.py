@@ -4,54 +4,55 @@ import openai
 import asyncio
 import logging
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from botbuilder.core import BotFrameworkAdapter, BotFrameworkAdapterSettings, TurnContext
+from flask_cors import CORS
 from botbuilder.schema import Activity
 
-# Load env variables
+# Load environment variables
 load_dotenv()
 
-# Flask app
+# Flask setup
 app = Flask(__name__)
+CORS(app, resources={r"/api/messages": {"origins": "*"}},
+     supports_credentials=True)
 
-# Azure Credentials
-APP_ID = os.getenv("MicrosoftAppId")
-APP_PASSWORD = os.getenv("MicrosoftAppPassword")
+# Logging
+logging.basicConfig(level=logging.INFO)
+
+# Environment variables
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-# Configure OpenAI
+# OpenAI config
 openai.api_type = "azure"
 openai.api_version = "2024-05-01-preview"
 openai.api_key = AZURE_OPENAI_API_KEY
 openai.azure_endpoint = AZURE_OPENAI_ENDPOINT.rstrip("/")
 
-# Bot Adapter
-adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
-adapter = BotFrameworkAdapter(adapter_settings)
-
-# Async function to handle user messages
+# Async message handler
 
 
-async def handle_message(turn_context: TurnContext):
-    user_input = turn_context.activity.text
-
+async def handle_message(user_input: str) -> str:
     try:
+        # Create thread
         thread = openai.beta.threads.create()
 
+        # Add user message
         openai.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=user_input
         )
 
+        # Run assistant
         run = openai.beta.threads.runs.create(
             assistant_id=ASSISTANT_ID,
             thread_id=thread.id
         )
 
+        # Wait for completion
         while run.status not in ["completed", "failed", "cancelled"]:
             time.sleep(1)
             run = openai.beta.threads.runs.retrieve(
@@ -59,29 +60,61 @@ async def handle_message(turn_context: TurnContext):
                 run_id=run.id
             )
 
+        # Get reply
         messages = openai.beta.threads.messages.list(thread_id=thread.id)
-        if messages.data:
-            reply = messages.data[0].content[0].text.value
+        if messages.data and messages.data[0].content:
+            return messages.data[0].content[0].text.value
         else:
-            reply = "No reply from Assistant."
-
-        await turn_context.send_activity(reply)
+            return "No response from Assistant."
 
     except Exception as e:
-        logging.error(f"[❌] OpenAI error: {e}")
-        await turn_context.send_activity("Oops! Something went wrong.")
+        logging.error(f"❌ Error in handle_message: {e}")
+        return f"Error: {str(e)}"
 
-# Main endpoint for Azure Bot Framework
+# Health check
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "✅ Azure OpenAI Bot is running."
+
+# Handle preflight OPTIONS (CORS)
+
+
+@app.route("/api/messages", methods=["OPTIONS"])
+def options():
+    return '', 200
+
+# Main bot endpoint
 
 
 @app.route("/api/messages", methods=["POST"])
 def messages():
-    activity = Activity().deserialize(request.json)
-    auth_header = request.headers.get("Authorization", "")
-    return asyncio.run(adapter.process_activity(activity, auth_header, handle_message))
+    try:
+        logging.info("📩 POST /api/messages")
+        if not request.json:
+            return jsonify({"error": "Empty request"}), 400
+
+        # Extract Bot Framework message
+        try:
+            activity = Activity().deserialize(request.json)
+            user_input = getattr(activity, "text", "Hello")
+        except Exception as e:
+            logging.warning(f"⚠️ Fallback parse: {e}")
+            user_input = request.json.get("text", "Hello")
+
+        reply = asyncio.run(handle_message(user_input))
+
+        return jsonify({
+            "type": "message",
+            "text": reply
+        })
+
+    except Exception as e:
+        logging.error(f"❌ Error in /api/messages: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
-# Run
+# Run Flask app
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     app.run(host="0.0.0.0", port=3978)

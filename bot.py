@@ -6,49 +6,45 @@ import logging
 
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from botbuilder.schema import Activity
 from flask_cors import CORS
+from botbuilder.schema import Activity
 
-# Load environment variables
+# Load environment variables from .env
 load_dotenv()
 
-# Flask app
+# Flask app setup
 app = Flask(__name__)
-# Allow all origins for testing; restrict in production
-CORS(app, origins=["*"])
+CORS(app, origins=["*"])  # Allow all origins for testing
 
-# Environment Variables
+# Environment variables
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-openai.api_key = AZURE_OPENAI_API_KEY
+# Azure OpenAI setup
 openai.api_type = "azure"
 openai.api_version = "2024-05-01-preview"
+openai.api_key = AZURE_OPENAI_API_KEY
 openai.azure_endpoint = AZURE_OPENAI_ENDPOINT.rstrip("/")
 
-# Message handler function
+# Async handler for messages
 
 
 async def handle_message(user_input: str) -> str:
     try:
-        # Step 1: Create a thread
         thread = openai.beta.threads.create()
 
-        # Step 2: Add user message to thread
         openai.beta.threads.messages.create(
             thread_id=thread.id,
             role="user",
             content=user_input
         )
 
-        # Step 3: Run the Assistant on that thread
         run = openai.beta.threads.runs.create(
             assistant_id=ASSISTANT_ID,
             thread_id=thread.id
         )
 
-        # Step 4: Wait for run to complete
         while run.status not in ["completed", "failed", "cancelled"]:
             time.sleep(1)
             run = openai.beta.threads.runs.retrieve(
@@ -56,39 +52,29 @@ async def handle_message(user_input: str) -> str:
                 run_id=run.id
             )
 
-        # Step 5: Get final message
         messages = openai.beta.threads.messages.list(thread_id=thread.id)
         if messages.data:
             return messages.data[0].content[0].text.value
         else:
             return "No reply from Assistant."
-
     except Exception as e:
-        logging.error(f"Error in handle_message: {e}")
+        logging.error(f"[❌] Error in handle_message: {e}")
         return f"Error: {str(e)}"
 
-# Health check route
+# Health check
 
 
 @app.route("/", methods=["GET"])
 def index():
     return "Azure OpenAI Assistant Bot is running."
 
-# POST /api/messages for incoming bot messages
+# Main /api/messages endpoint
 
 
-@app.route("/api/messages", methods=["GET", "POST", "OPTIONS"])
+@app.route("/api/messages", methods=["POST"])
 def messages():
-    if request.method == "OPTIONS":
-        # CORS preflight
-        return '', 200
-
-    if request.method == "GET":
-        return "This endpoint only supports POST for bot messages", 405
-
-    # POST handling
     try:
-        logging.warning(f"Incoming request: {request.json}")
+        logging.info("Received message request.")
         if not request.json:
             return jsonify({"error": "Empty request"}), 400
 
@@ -96,18 +82,18 @@ def messages():
             activity = Activity().deserialize(request.json)
             user_input = getattr(activity, "text", None) or "Hello"
         except Exception as e:
-            logging.error(f"Activity deserialization failed: {e}")
+            logging.warning(f"Activity parsing failed: {e}")
             user_input = request.json.get("text", "Hello")
 
         reply = asyncio.run(handle_message(user_input))
 
-        # Respond in Bot Framework format
         return jsonify({
             "type": "message",
             "text": reply
         })
+
     except Exception as e:
-        logging.error(f"Error: {e}")
+        logging.error(f"[❌] Error in /api/messages: {e}")
         return jsonify({"error": str(e)}), 500
 
 

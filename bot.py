@@ -2,15 +2,20 @@ import os
 import time
 import openai
 import asyncio
+
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from botbuilder.schema import Activity
+from flask_cors import CORS
 
 # Load environment variables
 load_dotenv()
 
 # Flask app
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all domains
+
+CORS(app, origins=["https://portal.azure.com"])
 
 # Environment Variables
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")

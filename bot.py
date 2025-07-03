@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
+from flask_cors import CORS
 
 # Load .env variables
 load_dotenv()
@@ -26,6 +27,7 @@ openai.azure_endpoint = AZURE_OPENAI_ENDPOINT.rstrip("/")
 
 # Flask app setup
 app = Flask(__name__)
+CORS(app, origins="*", supports_credentials=True)
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
 adapter = BotFrameworkAdapter(adapter_settings)
 

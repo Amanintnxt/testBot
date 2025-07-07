@@ -90,22 +90,29 @@ async def handle_message(turn_context: TurnContext):
 
 @app.route("/api/messages", methods=["POST"])
 def messages():
-    if "application/json" in request.headers["Content-Type"]:
-        body = request.json
-    else:
-        return Response(status=415)
+    try:
+        if "application/json" not in request.headers.get("Content-Type", ""):
+            return Response("Unsupported Media Type", status=415)
 
-    activity = Activity().deserialize(body)
-    auth_header = request.headers.get("Authorization", "")
-    task = adapter.process_activity(activity, auth_header, handle_message)
-    return asyncio.run(task)
+        activity = Activity().deserialize(request.json)
+        auth_header = request.headers.get("Authorization", "")
+
+        async def process():
+            return await adapter.process_activity(activity, auth_header, handle_message)
+
+        result = asyncio.run(process())
+        return Response(status=200)
+
+    except Exception as e:
+        logging.error(f"Exception in /api/messages: {e}")
+        return Response("Internal Server Error", status=500)
 
 # Health check
 
 
 @app.route("/", methods=["GET"])
 def health_check():
-    return "Bot is running."
+    return "Teams Bot is running."
 
 
 # Run server

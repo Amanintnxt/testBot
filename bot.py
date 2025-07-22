@@ -45,55 +45,39 @@ async def handle_message(turn_context: TurnContext):
         return
 
     try:
-        # 🔁 Reuse thread for memory
-        thread_id = thread_map.get(user_id)
-        if not thread_id:
-            thread = openai.beta.threads.create()
-            thread_id = thread.id
-            thread_map[user_id] = thread_id
+        # Send typing indicator
+        await turn_context.send_activity(Activity(type="typing"))
 
-        # 📨 Add message
-        openai.beta.threads.messages.create(
-            thread_id=thread_id,
-            role="user",
-            content=user_input
+        # Stream OpenAI response
+        response = openai.ChatCompletion.create(
+            model="gpt-35-turbo",  # or your Azure deployment name
+            messages=[{"role": "user", "content": user_input}],
+            stream=True,
+            api_key=AZURE_OPENAI_API_KEY,
+            api_base=AZURE_OPENAI_ENDPOINT,
+            api_type="azure",
+            api_version="2024-05-01-preview"
         )
 
-        # ▶️ Start run
-        run = openai.beta.threads.runs.create(
-            assistant_id=ASSISTANT_ID,
-            thread_id=thread_id
-        )
-
-        # ⏳ Wait until done
-        while run.status not in ["completed", "failed", "cancelled"]:
-            time.sleep(1)
-            run = openai.beta.threads.runs.retrieve(
-                thread_id=thread_id,
-                run_id=run.id
-            )
-
-        # 📥 Fetch latest reply
-        messages = openai.beta.threads.messages.list(thread_id=thread_id)
-        if messages.data:
-            reply = messages.data[0].content[0].text.value
-        else:
-            reply = "I didn't get a response from the assistant."
+        partial = ""
+        for chunk in response:
+            delta = chunk["choices"][0]["delta"].get("content", "")
+            if delta:
+                partial += delta
+                # Send each partial as a new message (Teams will show as separate bubbles)
+                await turn_context.send_activity(Activity(
+                    type="message",
+                    text=partial,
+                    recipient=turn_context.activity.from_property,
+                    from_property=turn_context.activity.recipient,
+                    conversation=turn_context.activity.conversation,
+                    channel_id=turn_context.activity.channel_id,
+                    service_url=turn_context.activity.service_url
+                ))
 
     except Exception as e:
         logging.error(f"Error handling message: {e}")
-        reply = "Sorry, something went wrong."
-
-    # 📤 Send back to user
-    await turn_context.send_activity(Activity(
-        type="message",
-        text=reply,
-        recipient=turn_context.activity.from_property,
-        from_property=turn_context.activity.recipient,
-        conversation=turn_context.activity.conversation,
-        channel_id=turn_context.activity.channel_id,
-        service_url=turn_context.activity.service_url
-    ))
+        await turn_context.send_activity("Sorry, something went wrong.")
 
 # 🔁 Endpoint to receive message
 

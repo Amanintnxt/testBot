@@ -7,7 +7,6 @@ from dotenv import load_dotenv
 from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
-import traceback
 
 # Load environment variables
 load_dotenv()
@@ -46,34 +45,57 @@ async def handle_message(turn_context: TurnContext):
         return
 
     try:
-        # Send typing indicator
-        await turn_context.send_activity(Activity(type="typing"))
+        # 🔁 Reuse thread for memory
+        thread_id = thread_map.get(user_id)
+        if not thread_id:
+            thread = openai.beta.threads.create()
+            thread_id = thread.id
+            thread_map[user_id] = thread_id
 
-        loop = asyncio.get_event_loop()
+        # 📨 Add message
+        openai.beta.threads.messages.create(
+            thread_id=thread_id,
+            role="user",
+            content=user_input
+        )
 
-        def blocking_stream():
-            return openai.ChatCompletion.create(
-                model="gpt-35-turbo",
-                messages=[{"role": "user", "content": user_input}],
-                stream=True
+        # ▶️ Start run
+        run = openai.beta.threads.runs.create(
+            assistant_id=ASSISTANT_ID,
+            thread_id=thread_id
+
+        )
+
+        # ⏳ Wait until done
+        while run.status not in ["completed", "failed", "cancelled"]:
+            time.sleep(1)
+            run = openai.beta.threads.runs.retrieve(
+                thread_id=thread_id,
+                run_id=run.id
             )
 
-        response_stream = await loop.run_in_executor(None, blocking_stream)
-
-        partial = ""
-
-        for chunk in response_stream:
-            delta = chunk.get("choices", [{}])[0].get(
-                "delta", {}).get("content", "")
-            if delta:
-                partial += delta
-                # Send partial updates here — consider throttling in real code
-                await turn_context.send_activity(delta)
+        # 📥 Fetch latest reply
+        messages = openai.beta.threads.messages.list(thread_id=thread_id)
+        if messages.data:
+            reply = messages.data[0].content[0].text.value
+        else:
+            reply = "I didn't get a response from the assistant."
 
     except Exception as e:
         logging.error(f"Error handling message: {e}")
-        logging.error(traceback.format_exc())
-        await turn_context.send_activity("Sorry, something went wrong.")
+        reply = "Sorry, something went wrong."
+
+    # 📤 Send back to user
+    await turn_context.send_activity(Activity(
+        type="message",
+        text=reply,
+        recipient=turn_context.activity.from_property,
+        from_property=turn_context.activity.recipient,
+        conversation=turn_context.activity.conversation,
+        channel_id=turn_context.activity.channel_id,
+        service_url=turn_context.activity.service_url
+    ))
+
 # 🔁 Endpoint to receive message
 
 

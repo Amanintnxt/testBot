@@ -83,7 +83,7 @@ async def handle_message(turn_context: TurnContext):
 
     except Exception as e:
         logging.error(f"Error handling message: {e}")
-        reply = "Sorry, something went wrong."
+        reply = "Something went wrong."
 
     # 📤 Send back to user
     await turn_context.send_activity(Activity(

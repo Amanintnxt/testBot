@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
+import traceback
 
 # Load environment variables
 load_dotenv()
@@ -48,37 +49,31 @@ async def handle_message(turn_context: TurnContext):
         # Send typing indicator
         await turn_context.send_activity(Activity(type="typing"))
 
-        # Stream OpenAI response
-        response = openai.ChatCompletion.create(
-            model="gpt-35-turbo",  # or your Azure deployment name
-            messages=[{"role": "user", "content": user_input}],
-            stream=True,
-            api_key=AZURE_OPENAI_API_KEY,
-            api_base=AZURE_OPENAI_ENDPOINT,
-            api_type="azure",
-            api_version="2024-05-01-preview"
-        )
+        loop = asyncio.get_event_loop()
+
+        def blocking_stream():
+            return openai.ChatCompletion.create(
+                model="gpt-35-turbo",
+                messages=[{"role": "user", "content": user_input}],
+                stream=True
+            )
+
+        response_stream = await loop.run_in_executor(None, blocking_stream)
 
         partial = ""
-        for chunk in response:
-            delta = chunk["choices"][0]["delta"].get("content", "")
+
+        for chunk in response_stream:
+            delta = chunk.get("choices", [{}])[0].get(
+                "delta", {}).get("content", "")
             if delta:
                 partial += delta
-                # Send each partial as a new message (Teams will show as separate bubbles)
-                await turn_context.send_activity(Activity(
-                    type="message",
-                    text=partial,
-                    recipient=turn_context.activity.from_property,
-                    from_property=turn_context.activity.recipient,
-                    conversation=turn_context.activity.conversation,
-                    channel_id=turn_context.activity.channel_id,
-                    service_url=turn_context.activity.service_url
-                ))
+                # Send partial updates here — consider throttling in real code
+                await turn_context.send_activity(delta)
 
     except Exception as e:
         logging.error(f"Error handling message: {e}")
+        logging.error(traceback.format_exc())
         await turn_context.send_activity("Sorry, something went wrong.")
-
 # 🔁 Endpoint to receive message
 
 

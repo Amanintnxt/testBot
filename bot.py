@@ -3,6 +3,7 @@ import time
 import openai
 import asyncio
 import logging
+import re
 from dotenv import load_dotenv
 from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
@@ -32,6 +33,149 @@ adapter = BotFrameworkAdapter(adapter_settings)
 # Simple memory store for user threads
 thread_map = {}
 
+# --- Helper Classes for Query Processing and Response Validation --- #
+
+
+class QueryProcessor:
+    """Classifies the user query and extracts entities/requirements."""
+
+    def __init__(self):
+        # Patterns for classification
+        self.patterns = {
+            'technical_spec': [
+                r'\b(specification|spec|range|zoom|resolution|accuracy|output|interface)\b',
+                r'\b\d+(\.\d+)?\s*(m|mm|cm|x|times|°C|°F|V|A)\b',
+                r'\b(FLIR|thermal|camera|sensor|transmitter|receiver)\b'
+            ],
+            'product_recommendation': [
+                r'\b(recommend|suggest|best|ideal|which|what)\b.*\b(for|to)\b',
+                r'\b(need|want|require|looking for)\b',
+                r'\b(application|use case|purpose)\b'
+            ],
+            'compatibility': [
+                r'\b(compatible|work with|connect|interface)\b',
+                r'\b(PNP|NPN|analog|digital|output)\b'
+            ],
+            'troubleshooting': [
+                r'\b(problem|issue|error|not working|failed|trouble)\b',
+                r'\b(fix|repair|solve|debug)\b'
+            ],
+            'comparison': [
+                r'\b(compare|difference|vs|versus|better)\b',
+                r'\b(between|among)\b'
+            ]
+        }
+
+    def classify_query(self, query: str) -> dict:
+        query_lower = query.lower()
+        scores = {}
+        for key, pats in self.patterns.items():
+            count = sum(1 for pat in pats if re.search(pat, query_lower))
+            scores[key] = count / len(pats)
+        primary_type = max(scores, key=scores.get)
+        confidence = scores[primary_type]
+        entities = self.extract_entities(query_lower)
+        return {
+            'primary_type': primary_type,
+            'confidence': confidence,
+            'entities': entities,
+            'original_query': query
+        }
+
+    def extract_entities(self, query: str) -> dict:
+        entities = {
+            'product_series': [],
+            'ranges': [],
+            'features': [],
+            'applications': []
+        }
+        # Detect product series with simple regex (expand as needed)
+        product_series_patterns = {
+            'FLIR_Ex': r'\bflir\s+ex\b',
+            'FLIR_Exx': r'\bflir\s+e\d{2}\b',
+            'FLIR_T8xx': r'\bflir\s+t8\d{2}\b',
+            'SMT': r'\bsmt\s*\d+\w*\b',
+            'ESF': r'\besf\b',
+            'ESP': r'\besp\b',
+            'BKS': r'\bbks\+?\b',
+        }
+        for name, pattern in product_series_patterns.items():
+            if re.search(pattern, query):
+                entities['product_series'].append(name)
+
+        # Ranges (e.g., "5m to 7m")
+        ranges = re.findall(
+            r'(\d+(?:\.\d+)?)\s*(?:to|-)\s*(\d+(?:\.\d+)?)\s*m', query)
+        entities['ranges'].extend(ranges)
+
+        # Features keywords found
+        features = ['zoom', 'resolution', 'accuracy', 'output', 'interface']
+        for f in features:
+            if f in query:
+                entities['features'].append(f)
+
+        # Application keywords (expandable)
+        applications = ['loop break detection',
+                        'temperature monitoring', 'presence detection']
+        for app in applications:
+            if app in query:
+                entities['applications'].append(app)
+
+        return entities
+
+
+class ResponseValidator:
+    """Validates the assistant response for coverage, precision, and series accuracy."""
+
+    def __init__(self):
+        self.prohibited_phrases = ['up to', 'approximately', 'around',
+                                   'similar to', 'might be', 'could be', 'probably', 'likely']
+        self.min_precision_score = 0.8
+
+    def validate(self, query_info: dict, response: str) -> dict:
+        issues = []
+        response_lower = response.lower()
+
+        # Check vague language
+        if any(phrase in response_lower for phrase in self.prohibited_phrases):
+            issues.append("Response contains vague language.")
+
+        # Product series confusion
+        ps = query_info['entities'].get('product_series', [])
+        flir_ex = 'flir_ex' in ps
+        flir_exx = 'flir_exx' in ps
+
+        if flir_ex and re.search(r'\bE\d{2}\b', response):
+            issues.append("Response confuses FLIR Ex series with Exx models.")
+        if flir_exx and re.search(r'\bFLIR\s+Ex\b', response) and not re.search(r'\bFLIR\s+Exx\b', response):
+            issues.append(
+                "Response wrongly attributes Exx series to Ex series.")
+
+        # Check if all requirements are mentioned / satisfied
+        missing_req = False
+        if ps and not any(series.lower() in response_lower for series in ps):
+            missing_req = True
+            issues.append(
+                "Response does not mention the requested product series.")
+
+        if query_info['entities'].get('ranges'):
+            # For simplicity, check if range numbers appear in response
+            ranges_in_response = any(
+                str(num) in response for tup in query_info['entities']['ranges'] for num in tup)
+            if not ranges_in_response:
+                missing_req = True
+                issues.append(
+                    "Response does not cover the specified sensing range.")
+
+        # Prepare validation flag
+        approved = (len(issues) == 0)
+        return {'approved': approved, 'issues': issues}
+
+
+# Create instances
+query_processor = QueryProcessor()
+response_validator = ResponseValidator()
+
 
 async def handle_message(turn_context: TurnContext):
     user_id = turn_context.activity.from_property.id
@@ -52,14 +196,28 @@ async def handle_message(turn_context: TurnContext):
             thread_id = thread.id
             thread_map[user_id] = thread_id
 
-        # Add user message to assistant thread
+        # Analyze user query
+        query_info = query_processor.classify_query(user_input)
+
+        # Compose enhanced query adding instructions for precision to assistant
+        enhancement = "Provide ONLY precise, document-based answers matching ALL user requirements exactly. No vague language or assumptions."
+        if query_info['entities'].get('product_series'):
+            enhancement += f" Focus on these product series: {', '.join(query_info['entities']['product_series'])}."
+        if query_info['entities'].get('ranges'):
+            ranges_str = ", ".join([f"{start}m to {end}m" for (
+                start, end) in query_info['entities']['ranges']])
+            enhancement += f" Ensure products cover the complete sensing range: {ranges_str}."
+
+        enhanced_query = f"{enhancement}\nUser question:\n{user_input}"
+
+        # Add user message to thread
         openai.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
-            content=user_input
+            content=enhanced_query
         )
 
-        # Start a new assistant run
+        # Start new assistant run
         run = openai.beta.threads.runs.create(
             assistant_id=ASSISTANT_ID,
             thread_id=thread_id
@@ -73,22 +231,32 @@ async def handle_message(turn_context: TurnContext):
                 run_id=run.id
             )
 
-        # Get last assistant message from the thread messages
+        # Retrieve latest assistant reply
         messages = openai.beta.threads.messages.list(thread_id=thread_id)
         assistant_reply = None
-        for message in messages.data:
-            if message.role == "assistant":
+        # Reverse to find last assistant message quickly
+        for message in reversed(messages.data):
+            if message.role == "assistant" and message.content:
                 assistant_reply = message.content[0].text.value
                 break
 
         if not assistant_reply:
-            assistant_reply = "Sorry, I didn't get a reply from the assistant."
+            assistant_reply = "Sorry, I didn't get a response from the assistant."
+
+        # Validate assistant response
+        validation = response_validator.validate(query_info, assistant_reply)
+
+        if not validation['approved']:
+            # Compose clarification or error message listing issues
+            issues_text = " ".join(validation['issues'])
+            clarification = f"I want to provide an accurate answer, but noticed some issues: {issues_text} Could you please clarify or rephrase your requirements?"
+            assistant_reply = clarification
 
     except Exception as e:
         logging.error(f"Error handling message: {e}")
-        assistant_reply = "Something went wrong."
+        assistant_reply = "Something went wrong while processing your message."
 
-    # Send the full reply after complete processing
+    # Send the reply
     await turn_context.send_activity(Activity(
         type="message",
         text=assistant_reply,

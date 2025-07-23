@@ -18,7 +18,7 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-# Azure OpenAI config
+# Configure OpenAI Azure API
 openai.api_type = "azure"
 openai.api_version = "2024-05-01-preview"
 openai.api_key = AZURE_OPENAI_API_KEY
@@ -29,7 +29,7 @@ app = Flask(__name__)
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
 adapter = BotFrameworkAdapter(adapter_settings)
 
-# Memory per user/session
+# Simple memory store for user threads
 thread_map = {}
 
 
@@ -37,36 +37,35 @@ async def handle_message(turn_context: TurnContext):
     user_id = turn_context.activity.from_property.id
     user_input = turn_context.activity.text
 
-    # 🛑 Blank message handler
     if not user_input or not user_input.strip():
         await turn_context.send_activity("Hello! How can I assist you today?")
         return
 
     try:
-        # 👇 Show typing indicator immediately
+        # Show typing indicator immediately
         await turn_context.send_activity(Activity(type="typing"))
 
-        # Get/create OpenAI thread ID with memory
+        # Get or create thread ID for user
         thread_id = thread_map.get(user_id)
         if not thread_id:
             thread = openai.beta.threads.create()
             thread_id = thread.id
             thread_map[user_id] = thread_id
 
-        # Add this user message to the assistant's thread
+        # Add user message to assistant thread
         openai.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=user_input
         )
 
-        # Start Assistant run
+        # Start a new assistant run
         run = openai.beta.threads.runs.create(
             assistant_id=ASSISTANT_ID,
             thread_id=thread_id
         )
 
-        # Poll for run status until done (completed, failed or cancelled)
+        # Poll until run completes/fails/cancelled
         while run.status not in ["completed", "failed", "cancelled"]:
             time.sleep(1)
             run = openai.beta.threads.runs.retrieve(
@@ -74,7 +73,7 @@ async def handle_message(turn_context: TurnContext):
                 run_id=run.id
             )
 
-        # Get the latest assistant reply when done
+        # Get last assistant message from the thread messages
         messages = openai.beta.threads.messages.list(thread_id=thread_id)
         assistant_reply = None
         for message in messages.data:
@@ -89,7 +88,7 @@ async def handle_message(turn_context: TurnContext):
         logging.error(f"Error handling message: {e}")
         assistant_reply = "Something went wrong."
 
-    # Send reply
+    # Send the full reply after complete processing
     await turn_context.send_activity(Activity(
         type="message",
         text=assistant_reply,
@@ -113,14 +112,12 @@ def messages():
         async def process():
             return await adapter.process_activity(activity, auth_header, handle_message)
 
-        result = asyncio.run(process())
+        asyncio.run(process())
         return Response(status=200)
 
     except Exception as e:
         logging.error(f"Exception in /api/messages: {e}")
         return Response("Internal Server Error", status=500)
-
-# Health check
 
 
 @app.route("/", methods=["GET"])
@@ -128,7 +125,6 @@ def health_check():
     return "Teams Bot is running."
 
 
-# Launch app
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     app.run(host="0.0.0.0", port=3978)

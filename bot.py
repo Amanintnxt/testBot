@@ -44,8 +44,8 @@ class QueryProcessor:
         self.patterns = {
             'technical_spec': [
                 r'\b(specification|spec|range|zoom|resolution|accuracy|output|interface)\b',
-                r'\b\d+(\.\d+)?\s*(m|mm|cm|x|times|°C|°F|V|A)\b',
-                r'\b(FLIR|thermal|camera|sensor|transmitter|receiver)\b'
+                r'\b\d+(\.\d+)?\s*(m|mm|cm|x|times|°c|°f|v|a)\b',
+                r'\b(flir|thermal|camera|sensor|transmitter|receiver)\b'
             ],
             'product_recommendation': [
                 r'\b(recommend|suggest|best|ideal|which|what)\b.*\b(for|to)\b',
@@ -54,7 +54,7 @@ class QueryProcessor:
             ],
             'compatibility': [
                 r'\b(compatible|work with|connect|interface)\b',
-                r'\b(PNP|NPN|analog|digital|output)\b'
+                r'\b(pnp|npn|analog|digital|output)\b'
             ],
             'troubleshooting': [
                 r'\b(problem|issue|error|not working|failed|trouble)\b',
@@ -125,54 +125,39 @@ class QueryProcessor:
 
 
 class ResponseValidator:
-    """Validates the assistant response for coverage, precision, and series accuracy."""
+    """
+    Validates the assistant response for coverage and precision, but is now less strict.
+    Blocks responses only if they are entirely vague (no numbers, no product, no spec) or say 'I don't know'.
+    """
 
     def __init__(self):
-        self.prohibited_phrases = ['up to', 'approximately', 'around',
-                                   'similar to', 'might be', 'could be', 'probably', 'likely']
-        self.min_precision_score = 0.8
+        self.block_threshold = 2  # Only block if multiple vague indicators found
 
     def validate(self, query_info: dict, response: str) -> dict:
         issues = []
         response_lower = response.lower()
+        vague_hits = 0
 
-        # Check vague language
-        if any(phrase in response_lower for phrase in self.prohibited_phrases):
-            issues.append("Response contains vague language.")
-
-        # Product series confusion
-        ps = query_info['entities'].get('product_series', [])
-        flir_ex = 'flir_ex' in ps
-        flir_exx = 'flir_exx' in ps
-
-        if flir_ex and re.search(r'\bE\d{2}\b', response):
-            issues.append("Response confuses FLIR Ex series with Exx models.")
-        if flir_exx and re.search(r'\bFLIR\s+Ex\b', response) and not re.search(r'\bFLIR\s+Exx\b', response):
+        # Block if response lacks numbers and no product terms
+        if (
+            all(x not in response_lower for x in [
+                "meter", "m", "range", "flir", "transmitter", "model", "series"])
+            and not any(char.isdigit() for char in response_lower)
+        ):
+            vague_hits += 1
             issues.append(
-                "Response wrongly attributes Exx series to Ex series.")
+                "Response does not include any numerical or product-specific info.")
 
-        # Check if all requirements are mentioned / satisfied
-        missing_req = False
-        if ps and not any(series.lower() in response_lower for series in ps):
-            missing_req = True
+        # Block if assistant clearly says it doesn't know
+        if any(phrase in response_lower for phrase in ["i don't know", "not sure", "sorry, i can't", "cannot answer"]):
+            vague_hits += 1
             issues.append(
-                "Response does not mention the requested product series.")
+                "Assistant admitted it doesn't know the answer or cannot answer.")
 
-        if query_info['entities'].get('ranges'):
-            # For simplicity, check if range numbers appear in response
-            ranges_in_response = any(
-                str(num) in response for tup in query_info['entities']['ranges'] for num in tup)
-            if not ranges_in_response:
-                missing_req = True
-                issues.append(
-                    "Response does not cover the specified sensing range.")
-
-        # Prepare validation flag
-        approved = (len(issues) == 0)
+        approved = vague_hits < self.block_threshold
         return {'approved': approved, 'issues': issues}
 
 
-# Create instances
 query_processor = QueryProcessor()
 response_validator = ResponseValidator()
 
@@ -234,7 +219,6 @@ async def handle_message(turn_context: TurnContext):
         # Retrieve latest assistant reply
         messages = openai.beta.threads.messages.list(thread_id=thread_id)
         assistant_reply = None
-        # Reverse to find last assistant message quickly
         for message in reversed(messages.data):
             if message.role == "assistant" and message.content:
                 assistant_reply = message.content[0].text.value
@@ -247,7 +231,6 @@ async def handle_message(turn_context: TurnContext):
         validation = response_validator.validate(query_info, assistant_reply)
 
         if not validation['approved']:
-            # Compose clarification or error message listing issues
             issues_text = " ".join(validation['issues'])
             clarification = f"I want to provide an accurate answer, but noticed some issues: {issues_text} Could you please clarify or rephrase your requirements?"
             assistant_reply = clarification

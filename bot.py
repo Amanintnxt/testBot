@@ -64,7 +64,7 @@ async def handle_message(turn_context: TurnContext):
         )
 
         # Prepare manual streaming run - raw HTTP POST request
-        url = f"{AZURE_OPENAI_ENDPOINT}/openai/assistants/{API_VERSION}/threads/runs"
+        url = f"{AZURE_OPENAI_ENDPOINT}/openai/threads/{thread_id}/runs?api-version={API_VERSION}"
         headers = {
             "api-key": AZURE_OPENAI_API_KEY,
             "Content-Type": "application/json"

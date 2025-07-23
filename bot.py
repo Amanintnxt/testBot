@@ -8,24 +8,21 @@ from flask import Flask, request, Response
 from botbuilder.core import BotFrameworkAdapterSettings, BotFrameworkAdapter, TurnContext
 from botbuilder.schema import Activity
 
-# Load environment variables
+# Load environment variables from .env file
 load_dotenv()
 
-# Credentials
 APP_ID = os.getenv("MicrosoftAppId", "")
 APP_PASSWORD = os.getenv("MicrosoftAppPassword", "")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT").rstrip("/")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
-API_VERSION = "2024-05-01-preview"  # Use your deployed API version
+API_VERSION = "2024-12-01-preview"  # Use latest preview for Assistants API
 
-# Flask & Bot setup
 app = Flask(__name__)
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
 adapter = BotFrameworkAdapter(adapter_settings)
 
-# To keep track of threads per user
-thread_map = {}
+thread_map = {}  # Maps user_id to thread_id
 
 
 async def handle_message(turn_context: TurnContext):
@@ -37,33 +34,31 @@ async def handle_message(turn_context: TurnContext):
         return
 
     try:
-        # Typing indicator
+        # Send typing indicator
         await turn_context.send_activity(Activity(type="typing"))
 
-        # Create or get thread_id
+        # Import and configure OpenAI SDK for thread management only
+        import openai
+        openai.api_type = "azure"
+        openai.api_version = API_VERSION
+        openai.api_key = AZURE_OPENAI_API_KEY
+        openai.azure_endpoint = AZURE_OPENAI_ENDPOINT
+
+        # Get or create thread for this user
         thread_id = thread_map.get(user_id)
         if not thread_id:
-            # Create thread via SDK (simpler)
-            # Note: `openai.beta.threads.create()` is imported from openai SDK
-            import openai
-            openai.api_type = "azure"
-            openai.api_version = API_VERSION
-            openai.api_key = AZURE_OPENAI_API_KEY
-            openai.azure_endpoint = AZURE_OPENAI_ENDPOINT
-
             thread = openai.beta.threads.create()
             thread_id = thread.id
             thread_map[user_id] = thread_id
 
-        # Add user message to thread via SDK
-        # This doesn't stream, just stores your message for context
+        # Add user message to the thread history
         openai.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=user_input
         )
 
-        # Prepare manual streaming run - raw HTTP POST request
+        # Prepare manual streaming POST request to run assistant on the thread
         url = f"{AZURE_OPENAI_ENDPOINT}/openai/threads/{thread_id}/runs?api-version={API_VERSION}"
         headers = {
             "api-key": AZURE_OPENAI_API_KEY,
@@ -71,19 +66,17 @@ async def handle_message(turn_context: TurnContext):
         }
         payload = {
             "assistant_id": ASSISTANT_ID,
-            "thread_id": thread_id,
-            "stream": True
+            "stream": True,
+            "parameters": {}
         }
 
-        # Run the streaming request in a thread safe way for asyncio
         loop = asyncio.get_event_loop()
 
         def stream_run():
             collected_text = ""
-            with requests.post(url, headers=headers, json=payload, stream=True) as r:
-                r.raise_for_status()
-
-                for line in r.iter_lines():
+            with requests.post(url, headers=headers, json=payload, stream=True) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
                     if line:
                         decoded = line.decode("utf-8")
                         if decoded.startswith("data: "):
@@ -97,10 +90,10 @@ async def handle_message(turn_context: TurnContext):
                                 chunk = delta.get("content", "")
                                 collected_text += chunk
                             except json.JSONDecodeError:
-                                # Ignore malformed JSON fragments
                                 pass
             return collected_text
 
+        # Run blocking streaming call asynchronously
         collected_reply = await loop.run_in_executor(None, stream_run)
 
         if not collected_reply:
@@ -110,7 +103,7 @@ async def handle_message(turn_context: TurnContext):
         logging.error(f"Error in handle_message: {e}")
         collected_reply = "Something went wrong."
 
-    # Send the full reply to the user
+    # Send the final message with full assistant response
     await turn_context.send_activity(Activity(
         type="message",
         text=collected_reply,
@@ -118,7 +111,7 @@ async def handle_message(turn_context: TurnContext):
         from_property=turn_context.activity.recipient,
         conversation=turn_context.activity.conversation,
         channel_id=turn_context.activity.channel_id,
-        service_url=turn_context.activity.service_url
+        service_url=turn_context.activity.service_url,
     ))
 
 

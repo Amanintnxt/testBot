@@ -37,9 +37,9 @@ async def handle_message(turn_context: TurnContext):
     user_id = turn_context.activity.from_property.id
     user_input = turn_context.activity.text
 
-    if not user_input or not user_input.strip():
-        await turn_context.send_activity("Hello! How can I assist you today?")
-        return
+    # if not user_input or not user_input.strip():
+    #     await turn_context.send_activity("Hello! How can I assist you today?")
+    #     return
 
     try:
         # Show typing indicator immediately

@@ -11,70 +11,71 @@ from botbuilder.schema import Activity
 # Load environment variables
 load_dotenv()
 
-# Credentials
+# Credentials and keys
 APP_ID = os.getenv("MicrosoftAppId", "")
 APP_PASSWORD = os.getenv("MicrosoftAppPassword", "")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-# Azure OpenAI setup
+# Configure OpenAI Azure API
 openai.api_type = "azure"
 openai.api_version = "2024-05-01-preview"
 openai.api_key = AZURE_OPENAI_API_KEY
 openai.azure_endpoint = AZURE_OPENAI_ENDPOINT.rstrip("/")
 
-# Flask & Adapter setup
+# Flask & Bot setup
 app = Flask(__name__)
 adapter_settings = BotFrameworkAdapterSettings(APP_ID, APP_PASSWORD)
 adapter = BotFrameworkAdapter(adapter_settings)
 
-# Memory tracking
-thread_map = {}        # UserID -> ThreadID
-greeted_users = {}     # UserID -> greeted flag
+# Simple memory store for user threads
+thread_map = {}
 
 
 async def handle_message(turn_context: TurnContext):
-    if turn_context.activity.type != "message":
+    # Send greeting only when bot is added to conversation
+    if turn_context.activity.type == "conversationUpdate":
+        members_added = turn_context.activity.members_added
+        if members_added:
+            for member in members_added:
+                # Greet when the bot itself is added, not others
+                if member.id == turn_context.activity.recipient.id:
+                    await turn_context.send_activity("Hello! How can I assist you today?")
+        return
+
+    # Only handle real messages with non-empty text
+    if turn_context.activity.type != "message" or not turn_context.activity.text or not turn_context.activity.text.strip():
         return
 
     user_id = turn_context.activity.from_property.id
     user_input = turn_context.activity.text
 
-    # Greet on first message only
-    if user_id not in greeted_users:
-        greeted_users[user_id] = True
-        await turn_context.send_activity("Hello! How can I assist you today?")
-        return
-
-    if not user_input or not user_input.strip():
-        return
-
     try:
-        # Typing indicator
+        # Show typing indicator immediately
         await turn_context.send_activity(Activity(type="typing"))
 
-        # Create or reuse thread
+        # Get or create thread ID for user
         thread_id = thread_map.get(user_id)
         if not thread_id:
             thread = openai.beta.threads.create()
             thread_id = thread.id
             thread_map[user_id] = thread_id
 
-        # Add user message
+        # Add user message to assistant thread
         openai.beta.threads.messages.create(
             thread_id=thread_id,
             role="user",
             content=user_input
         )
 
-        # Run assistant
+        # Start a new assistant run
         run = openai.beta.threads.runs.create(
             assistant_id=ASSISTANT_ID,
             thread_id=thread_id
         )
 
-        # Wait for completion
+        # Poll until run completes/fails/cancelled
         while run.status not in ["completed", "failed", "cancelled"]:
             time.sleep(1)
             run = openai.beta.threads.runs.retrieve(
@@ -82,7 +83,7 @@ async def handle_message(turn_context: TurnContext):
                 run_id=run.id
             )
 
-        # Get assistant reply
+        # Get last assistant message from the thread messages
         messages = openai.beta.threads.messages.list(thread_id=thread_id)
         assistant_reply = None
         for message in messages.data:
@@ -97,7 +98,7 @@ async def handle_message(turn_context: TurnContext):
         logging.error(f"Error handling message: {e}")
         assistant_reply = "Something went wrong."
 
-    # Respond to user
+    # Send the full reply after complete processing
     await turn_context.send_activity(Activity(
         type="message",
         text=assistant_reply,

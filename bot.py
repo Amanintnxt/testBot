@@ -34,6 +34,9 @@ thread_map = {}
 
 
 async def handle_message(turn_context: TurnContext):
+    if turn_context.activity.type != "message":
+        return
+
     user_id = turn_context.activity.from_property.id
     user_input = turn_context.activity.text
 
